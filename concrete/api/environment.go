@@ -16,18 +16,28 @@
 package api
 
 import (
+	"bytes"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/concrete/utils"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/holiman/uint256"
 )
 
+func debugfFormat(msg string, ctx ...interface{}) string {
+	var buf bytes.Buffer
+	logger := log.NewLogger(log.NewTerminalHandlerWithLevel(&buf, log.LevelDebug, true))
+	logger.Debug(msg, ctx...)
+	return buf.String()
+}
+
 type Environment interface {
 	Execute(op OpCode, args [][]byte) [][]byte
 
 	// Meta
 	EnableGasMetering(meter bool)
-	Debug(msg string) // TODO: improve
+	Debug(msg string)
+	Debugf(msg string, ctx ...interface{})
 	TimeNow() uint64
 
 	// Utils
@@ -68,6 +78,7 @@ type Environment interface {
 	GetCallValue() *uint256.Int
 	// Storage
 	StorageLoad(key common.Hash) common.Hash
+	TransientLoad(key common.Hash) common.Hash
 	// Code
 	GetCode(address common.Address) []byte
 	GetCodeSize() int
@@ -75,6 +86,7 @@ type Environment interface {
 	// Local - WRITE
 	// Storage
 	StorageStore(key common.Hash, value common.Hash)
+	TransientStore(key common.Hash, value common.Hash)
 	// Log
 	Log(topics []common.Hash, data []byte)
 
@@ -93,8 +105,8 @@ type Environment interface {
 	Call(address common.Address, data []byte, gas uint64, value *uint256.Int) ([]byte, error)
 	CallDelegate(address common.Address, data []byte, gas uint64) ([]byte, error)
 	// Create
-	Create(data []byte, value *uint256.Int) (common.Address, error)
-	Create2(data []byte, endowment *uint256.Int, salt *uint256.Int) (common.Address, error)
+	Create(data []byte, value *uint256.Int) ([]byte, common.Address, error)
+	Create2(data []byte, endowment *uint256.Int, salt *uint256.Int) ([]byte, common.Address, error)
 }
 
 type EnvConfig struct {
@@ -102,14 +114,6 @@ type EnvConfig struct {
 	// Ephemeral bool
 	IsTrusted bool
 }
-
-type logger struct{}
-
-func (logger) Debug(msg string) {
-	log.Debug(msg)
-}
-
-var _ Logger = logger{}
 
 type Contract struct {
 	Address  common.Address
@@ -145,7 +149,6 @@ type Env struct {
 	config   EnvConfig
 	meterGas bool
 
-	logger  Logger
 	statedb StateDB
 	block   BlockContext
 	caller  Caller
@@ -169,7 +172,6 @@ func NewEnvironment(
 		_execute: execute,
 		config:   config,
 		meterGas: meterGas,
-		logger:   logger{},
 		statedb:  statedb,
 		block:    block,
 		caller:   caller,
@@ -261,6 +263,11 @@ func (env *Env) EnableGasMetering(meter bool) {
 func (env *Env) Debug(msg string) {
 	input := [][]byte{[]byte(msg)}
 	env.execute(Debug_OpCode, input)
+}
+
+func (env *Env) Debugf(msg string, ctx ...interface{}) {
+	fmsg := debugfFormat(msg, ctx...)
+	env.Debug(fmsg)
 }
 
 func (env *Env) TimeNow() uint64 {
@@ -378,6 +385,12 @@ func (env *Env) StorageLoad(key common.Hash) common.Hash {
 	return common.BytesToHash(output[0])
 }
 
+func (env *Env) TransientLoad(key common.Hash) common.Hash {
+	input := [][]byte{key.Bytes()}
+	output := env.execute(TransientLoad_OpCode, input)
+	return common.BytesToHash(output[0])
+}
+
 func (env *Env) GetCode(address common.Address) []byte {
 	input := [][]byte{address.Bytes()}
 	output := env.execute(GetCode_OpCode, input)
@@ -392,6 +405,11 @@ func (env *Env) GetCodeSize() int {
 func (env *Env) StorageStore(key common.Hash, value common.Hash) {
 	input := [][]byte{key.Bytes(), value.Bytes()}
 	env.execute(StorageStore_OpCode, input)
+}
+
+func (env *Env) TransientStore(key common.Hash, value common.Hash) {
+	input := [][]byte{key.Bytes(), value.Bytes()}
+	env.execute(TransientStore_OpCode, input)
 }
 
 func (env *Env) Log(topics []common.Hash, data []byte) {
@@ -445,16 +463,16 @@ func (env *Env) CallDelegate(address common.Address, data []byte, gas uint64) ([
 	return output[0], utils.DecodeError(output[1])
 }
 
-func (env *Env) Create(data []byte, value *uint256.Int) (common.Address, error) {
+func (env *Env) Create(data []byte, value *uint256.Int) ([]byte, common.Address, error) {
 	input := [][]byte{data, value.Bytes()}
 	output := env.execute(Create_OpCode, input)
-	return common.BytesToAddress(output[0]), utils.DecodeError(output[1])
+	return output[0], common.BytesToAddress(output[1]), utils.DecodeError(output[2])
 }
 
-func (env *Env) Create2(data []byte, endowment *uint256.Int, salt *uint256.Int) (common.Address, error) {
+func (env *Env) Create2(data []byte, endowment *uint256.Int, salt *uint256.Int) ([]byte, common.Address, error) {
 	input := [][]byte{data, endowment.Bytes(), salt.Bytes()}
 	output := env.execute(Create2_OpCode, input)
-	return common.BytesToAddress(output[0]), utils.DecodeError(output[1])
+	return output[0], common.BytesToAddress(output[1]), utils.DecodeError(output[2])
 }
 
 var _ Environment = (*Env)(nil)

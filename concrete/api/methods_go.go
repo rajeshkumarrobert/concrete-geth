@@ -22,6 +22,8 @@ package api
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -156,6 +158,11 @@ func newEnvironmentMethods() JumpTable {
 			dynamicGas: gasStorageLoad,
 			static:     true,
 		},
+		TransientLoad_OpCode: {
+			execute:     opTransientLoad,
+			constantGas: params.WarmStorageReadCostEIP2929,
+			static:      true,
+		},
 		GetCode_OpCode: {
 			// disabled
 			// TODO: Why is this disabled?
@@ -173,6 +180,11 @@ func newEnvironmentMethods() JumpTable {
 			execute:    opStorageStore,
 			dynamicGas: gasStorageStore,
 			static:     false,
+		},
+		TransientStore_OpCode: {
+			execute:     opTransientStore,
+			constantGas: params.WarmStorageReadCostEIP2929,
+			static:      false,
 		},
 		Log_OpCode: {
 			execute:    opLog,
@@ -298,7 +310,7 @@ func opDebug(env *Env, args [][]byte) ([][]byte, error) {
 		return nil, ErrInvalidInput
 	}
 	msg := string(args[0])
-	env.logger.Debug(msg)
+	fmt.Fprint(os.Stderr, msg)
 	return nil, nil
 }
 
@@ -524,6 +536,18 @@ func opStorageLoad(env *Env, args [][]byte) ([][]byte, error) {
 	return [][]byte{value.Bytes()}, nil
 }
 
+func opTransientLoad(env *Env, args [][]byte) ([][]byte, error) {
+	if len(args) != 1 {
+		return nil, ErrInvalidInput
+	}
+	if len(args[0]) != 32 {
+		return nil, ErrInvalidInput
+	}
+	key := common.BytesToHash(args[0])
+	value := env.statedb.GetTransientState(env.contract.Address, key)
+	return [][]byte{value.Bytes()}, nil
+}
+
 func opGetCode(env *Env, args [][]byte) ([][]byte, error) {
 	if len(args) != 0 {
 		return nil, ErrInvalidInput
@@ -589,6 +613,19 @@ func opStorageStore(env *Env, args [][]byte) ([][]byte, error) {
 	key := common.BytesToHash(args[0])
 	value := common.BytesToHash(args[1])
 	env.statedb.SetState(env.contract.Address, key, value)
+	return nil, nil
+}
+
+func opTransientStore(env *Env, args [][]byte) ([][]byte, error) {
+	if len(args) != 2 {
+		return nil, ErrInvalidInput
+	}
+	if len(args[0]) != 32 || len(args[1]) != 32 {
+		return nil, ErrInvalidInput
+	}
+	key := common.BytesToHash(args[0])
+	value := common.BytesToHash(args[1])
+	env.statedb.SetTransientState(env.contract.Address, key, value)
 	return nil, nil
 }
 
@@ -799,10 +836,9 @@ func opCreate(env *Env, args [][]byte) ([][]byte, error) {
 	)
 	gas -= gas / 64
 	env.useGas(gas) // This will always return true since we are using a fraction of the gas left
-	// TODO: return value
-	_, address, gasLeft, err := env.caller.Create(input, gas, value)
+	ret, address, gasLeft, err := env.caller.Create(input, gas, value)
 	env.contract.Gas += gasLeft
-	return [][]byte{address.Bytes(), utils.EncodeError(err)}, nil
+	return [][]byte{ret, address.Bytes(), utils.EncodeError(err)}, nil
 }
 
 func gasCreate2(env *Env, args [][]byte) (uint64, error) {
@@ -828,7 +864,7 @@ func opCreate2(env *Env, args [][]byte) ([][]byte, error) {
 	)
 	gas -= gas / 64
 	env.useGas(gas) // This will always return true since we are using a fraction of the gas left
-	_, address, gasLeft, err := env.caller.Create2(input, gas, value, salt)
+	ret, address, gasLeft, err := env.caller.Create2(input, gas, value, salt)
 	env.contract.Gas += gasLeft
-	return [][]byte{address.Bytes(), utils.EncodeError(err)}, nil
+	return [][]byte{ret, address.Bytes(), utils.EncodeError(err)}, nil
 }
